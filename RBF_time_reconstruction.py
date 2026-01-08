@@ -16,7 +16,7 @@ from scipy.stats import wasserstein_distance
 from sklearn.neighbors import NearestNeighbors
 import matplotlib as mpl
 import analysator as pt
-import scipy
+import scipy, sys
 
 """
 #SC1-4 overall means (from 1353 onwards):
@@ -36,719 +36,1003 @@ vg_v_x = -739256.9
 vg_v_y = -268152.8
 vg_v_z =  147101.5
 
-output_dir ="/home/leeviloi/fluxrope_thesis/timeseries_tail/"
+# output_dir ="/home/leeviloi/fluxrope_thesis/timeseries_tail/"
 
 vel_bulk = -1*np.array([vg_v_x,vg_v_y,vg_v_z])
+end=20874
+stride=50
+start=15000
 
-#Shared info
-df = pd.read_csv("/home/leeviloi/plas_obs_vg_b_timeseries_tail_right_z=0.5.csv")
+# missing_sc = ["sc2","sc3","sc4"]
+# missing_sc = ["sc5","sc6","sc7"]
+# missing_sc = ["sc2","sc3","sc4","sc5","sc6","sc7"]
+#missing_sc = None
+# misses = [None]
+misses = [None, ["sc2","sc3","sc4"], ["sc5","sc6","sc7"], ["sc2","sc3","sc4","sc5","sc6","sc7"]]
+# misses = [["sc2","sc3","sc4","sc5","sc6","sc7"]]
+for missing_sc in misses:
+ for endi,end in enumerate([end]):#enumerate(range(start+stride,end,stride)):
+    #Shared info
+    # df = pd.read_csv("/home/leeviloi/plas_obs_vg_b_timeseries_tail_right_z=0.5.csv")
 
-R_e = 6371000   
+    conf = "NSP1"
+    df = pd.read_csv(f"./shock-run/{conf}_merged.csv")
 
-#STARTING SC locations 
-sc_init = {
-    "sc1": np.array([-27.0, 3.0, 0.5]) * R_e,
-    "sc2": np.array([-26.0, 3.0, 1.5]) * R_e,
-    "sc3": np.array([-26.0, 3.86602540, 0.0]) * R_e,
-    "sc4": np.array([-26.0, 2.13397460, 0.0]) * R_e,
-    "sc5": np.array([-26.85714286, 3.0, 0.64285714]) * R_e,
-    "sc6": np.array([-26.85714286, 3.12371791, 0.42857143]) * R_e,
-    "sc7": np.array([-26.85714286, 2.87628209, 0.42857143]) * R_e,
-}
+    print(df.iloc[0])
 
-times = df["Timeframe"].to_numpy() 
-T = len(times)
-sc_names  = [f"sc{i}" for i in range(1, 8)]
+    df = df[start:end:stride]
+    df["Timeframe"] = df["Position_Index"]
+    times = df["Timeframe"].to_numpy() 
+    T = len(times)
+    sc_names  = [f"sc{i}" for i in range(1, 8)]
+    ti = times[T-1]
+    df["dt"] = df["Timeframe"] - df["Timeframe"].iloc[0]
 
-df["dt"] = df["Timeframe"] - df["Timeframe"].iloc[0]
-
-#Make artificial spacecraft location for RBF reconstructions
-for sc, init_pos in sc_init.items():
-    df[f"{sc}_pos_x"] = init_pos[0] + vel_bulk[0] * df["dt"]
-    df[f"{sc}_pos_y"] = init_pos[1] + vel_bulk[1] * df["dt"]
-    df[f"{sc}_pos_z"] = init_pos[2] + vel_bulk[2] * df["dt"]
+    R_e = 6371000   
 
 
-pos_cols = sum([[f"{sc}_pos_x", f"{sc}_pos_y", f"{sc}_pos_z"]
-                for sc in sc_init.keys()], [])
-B_cols   = sum([[f"{sc}_vg_B_x", f"{sc}_vg_B_y", f"{sc}_vg_B_z"]
-                for sc in sc_init.keys()], [])
+    
+    # sc_init = {
+    #     "sc1": np.array([-27.0, 3.0, 0.5]) * R_e,
+    #     "sc2": np.array([-26.0, 3.0, 1.5]) * R_e,
+    #     "sc3": np.array([-26.0, 3.86602540, 0.0]) * R_e,
+    #     "sc4": np.array([-26.0, 2.13397460, 0.0]) * R_e,
+    #     "sc5": np.array([-26.85714286, 3.0, 0.64285714]) * R_e,
+    #     "sc6": np.array([-26.85714286, 3.12371791, 0.42857143]) * R_e,
+    #     "sc7": np.array([-26.85714286, 2.87628209, 0.42857143]) * R_e,
+    # }
 
-#######################
-#Radial Basis Function#
-#######################
+    sc_init = {
+        f"sc{sc}": np.array([df[f"sc{sc}_pos_x"][start],df[f"sc{sc}_pos_y"][start],df[f"sc{sc}_pos_z"][start] ]) for sc in [1,2,3,4,5,6,7]
+    }
+    print(sc_init)
 
-centers = (df[pos_cols].to_numpy().reshape(T * 7, 3))  
-values  =  df[B_cols].to_numpy().reshape(T * 7, 3)   
+    # sc_step = {
+    #     f"sc{sc}": np.array([df[f"sc{sc}_pos_x"][start+stride],df[f"sc{sc}_pos_y"][start+stride],df[f"sc{sc}_pos_z"][start+stride] ]) for sc in [1,2,3,4,5,6,7]
+    # }
+    sc_fin = np.array([[df[f"sc{sc}_pos_x"][ti],df[f"sc{sc}_pos_y"][ti],df[f"sc{sc}_pos_z"][ti]] for sc in [1,2,3,4,5,6,7]])
+    print(sc_fin)
 
-#LOOCV method 
+    # vel_bulk = (sc_step["sc1"]-sc_init["sc1"])/stride
 
-def E_func(eps, centers, values):
-    #O(N³) so scales poorly with number of points
-    N_pts = np.shape(centers)[0]
-    L= np.shape(centers)[1]
-    E = np.zeros([N_pts,L])
-    eps = abs(eps)
-    for i in range(N_pts):
-        r_used = np.vstack((centers[:i,:],centers[i+1:,:]))
-        b_used = np.vstack((values[:i,:],values[i+1:,:]))
-        rbf_trial = RBFInterpolator(r_used,b_used, kernel="multiquadric",
-                    epsilon=eps,
-                    smoothing=0.0
-                    )
+
+
+
+    #Make artificial spacecraft location for RBF reconstructions
+    # for sc, init_pos in sc_init.items():
+    #     df[f"{sc}_pos_x"] = init_pos[0] + vel_bulk[0] * df["dt"]
+        #   df[f"{sc}_pos_y"] = init_pos[1] + 1 * df["dt"]
+    #     df[f"{sc}_pos_z"] = init_pos[2] + vel_bulk[2] * df["dt"]
+
+
+    pos_cols = sum([[f"{sc}_pos_x", f"{sc}_pos_y", f"{sc}_pos_z"]
+                    for sc in sc_init.keys()], [])
+    B_cols   = sum([[f"{sc}_vg_B_x", f"{sc}_vg_B_y", f"{sc}_vg_B_z"]
+                    for sc in sc_init.keys()], [])
+    print(pos_cols)
+    #######################
+    #Radial Basis Function#
+    #######################
+    centers = (df[pos_cols].to_numpy().reshape(T * 7, 3))  
+    values  =  df[B_cols].to_numpy().reshape(T * 7, 3)   
+    #LOOCV method 
+
+    def E_func(eps, centers, values):
+        #O(N³) so scales poorly with number of points
+        N_pts = np.shape(centers)[0]
+        L= np.shape(centers)[1]
+        E = np.zeros([N_pts,L])
+        eps = abs(eps)
+        for i in range(N_pts):
+            r_used = np.vstack((centers[:i,:],centers[i+1:,:]))
+            b_used = np.vstack((values[:i,:],values[i+1:,:]))
+            rbf_trial = RBFInterpolator(r_used,b_used, kernel="multiquadric",
+                        epsilon=eps,
+                        smoothing=0.0
+                        )
+            
+            B_recon_rbf = rbf_trial(centers[i][None, :])[0]
         
-        B_recon_rbf = rbf_trial(centers[i][None, :])[0]
-       
-        B_true = values[i,:]
-       
-        E[i,:] = B_true - B_recon_rbf
-    
-    return scipy.linalg.norm(E)
-
-#Slow own minimizatin function. Probably better to try use something like 
-#scipy.optimization.minimize. Values very small tho
-def find_eps(centers, values, style = "log", start = -4, end = 4, Num = 20):
-    #Simple function to loop through epsilon values to find best one
-    if style == "log":
-        slots = np.logspace(start, end, Num)
-    elif style == "linear":
-        slots = np.linspace(start,end,Num)
-    else:
-        raise "Invalid style: either linear or log"
-    
-    min_eps = 1
-    min = 1
-    for i in slots:
+            B_true = values[i,:]
         
-        res = E_func(i,centers, values)
+            E[i,:] = B_true - B_recon_rbf
         
-        #print(res)
-        if res< min:
-            min = res
-            min_eps = i
-    return min_eps, min
+        return scipy.linalg.norm(E)
 
-#MAIN RBF reconstruction function 
-def RBF_missing_data(missing_sc = None, eps_method = "neighbour"):
-    #Modify to select only sc that aren't in missing_sc then just same things as below: 
+    #Slow own minimizatin function. Probably better to try use something like 
+    #scipy.optimization.minimize. Values very small tho
+    def find_eps(centers, values, style = "log", start = -4, end = 4, Num = 20):
+        #Simple function to loop through epsilon values to find best one
+        if style == "log":
+            slots = np.logspace(start, end, Num)
+        elif style == "linear":
+            slots = np.linspace(start,end,Num)
+        else:
+            raise "Invalid style: either linear or log"
+        
+        min_eps = 1
+        min = 1
+        for i in slots:
+            
+            res = E_func(i,centers, values)
+            
+            #print(res)
+            if res< min:
+                min = res
+                min_eps = i
+        return min_eps, min
 
-    if missing_sc is None:
-        included_sc = sc_names
-    else:
-        included_sc = [sc for sc in sc_names if sc not in missing_sc]
+    #MAIN RBF reconstruction function 
+    def RBF_missing_data(missing_sc = None, eps_method = "neighbour"):
+        #Modify to select only sc that aren't in missing_sc then just same things as below: 
 
-    included_pos_cols = sum([[f"{sc}_pos_x", f"{sc}_pos_y", f"{sc}_pos_z"] for sc in included_sc], [])
-    included_B_cols = sum([[f"{sc}_vg_B_x", f"{sc}_vg_B_y", f"{sc}_vg_B_z"] for sc in included_sc], [])
+        if missing_sc is None:
+            included_sc = sc_names
+        else:
+            included_sc = [sc for sc in sc_names if sc not in missing_sc]
 
-    centers_inc = df[included_pos_cols].to_numpy().reshape(-1, 3)
-    values_inc = df[included_B_cols].to_numpy().reshape(-1, 3)
-    #pick epsilon
-    "https://www.math.iit.edu/~fass/Dolomites.pdf?" #nearest neighbor method mentioned
-    nbrs = NearestNeighbors(n_neighbors=2).fit(centers_inc)
-    dists, _ = nbrs.kneighbors(centers_inc)
+        included_pos_cols = sum([[f"{sc}_pos_x", f"{sc}_pos_y", f"{sc}_pos_z"] for sc in included_sc], [])
+        included_B_cols = sum([[f"{sc}_vg_B_x", f"{sc}_vg_B_y", f"{sc}_vg_B_z"] for sc in included_sc], [])
 
-    if eps_method == "neighbour":
-        epsilon = np.median(dists[:, 1])
-    if eps_method == "LOOCV":
-        #This is very slow and seemingly choise of epsilon >1e-3 makes little difference 
-        #run once and the manually set found epsilon.
-        epsilon, _ = find_eps(centers_inc,values_inc)
+        ax = plt.figure().add_subplot(projection='3d')
+        
 
-    print(f"RBF epsilon (missing {missing_sc}) = {epsilon/1000:.3g} km")
-    
-    #RBF interpolation
-    rbf = RBFInterpolator(
-        centers_inc, values_inc,
-        kernel="multiquadric",
-        epsilon=epsilon,
-        smoothing=0.0
-    )
+        centers_inc = df[included_pos_cols].to_numpy().reshape(-1, 3)
+        ax.scatter(centers_inc[:,0],centers_inc[:,1],centers_inc[:,2],marker='o',s=1)
+        plt.savefig("scatter.png")
+        
+        # print("centers_inc\n",centers_inc)
+        values_inc = df[included_B_cols].to_numpy().reshape(-1, 3)
 
-    return rbf, included_pos_cols, included_B_cols
+        unique_centers, unique_indices = np.unique(centers_inc, axis=0, return_index=True)
+        unique_values = values_inc[unique_indices]
 
-rbf, included_pos_cols, included_B_cols =  RBF_missing_data()
+        #pick epsilon
+        "https://www.math.iit.edu/~fass/Dolomites.pdf?" #nearest neighbor method mentioned
+        nbrs = NearestNeighbors(n_neighbors=2).fit(unique_centers)
+        try:
+            dists, _ = nbrs.kneighbors(unique_centers)
+        except:
+            print("nbrs.kneighbors failure, continue with dummy dists")
+            # print("dists\n",dists)
+            dists = np.array([[1,2],[1,2]])
+        if eps_method == "neighbour":
+            epsilon = np.median(dists[:, 1])
+        if eps_method == "LOOCV":
+            #This is very slow and seemingly choise of epsilon >1e-3 makes little difference 
+            #run once and the manually set found epsilon.
+            epsilon, _ = find_eps(unique_centers,unique_values)
 
-def sample_slice(coord1, coord2, const_coord, plane, nx, ny):
-    """
-    Samples a slice of the RBF reconstruction at give coordinates
-    :kword coord1: array of x coordinates
-    :kword coord2: array of y coordinates
-    :kword const_coord: Constant coordinate, last location coordinate of plane
-    :kword plane: Plane wanted to be sliced
-    
-    Ex. use: 
-        xs = np.linspace(bary[0]-L_m, bary[0]+L_m, nx)
-        ys = np.linspace(bary[1]-L_m, bary[1]+L_m, ny)
+        print(f"RBF epsilon (missing {missing_sc}) = {epsilon/1000:.3g} km")
+        
+        epsilon=1
 
-        XY = sample_slice(xs, ys, bary[2], "xy", nx, ny)
-    """
-    if plane == "xy":
-        X, Y = np.meshgrid(coord1, coord2)
-        pts  = np.column_stack([X.ravel(), Y.ravel(),
-                                np.full(X.size, const_coord)])
+
+        # print("centers_inc", centers_inc)
+        # print("values_inc", values_inc)
+        print("epsilon",epsilon)
+        #RBF interpolation
+        rbf = RBFInterpolator(
+            unique_centers, unique_values,
+            kernel="multiquadric",
+            epsilon=epsilon,
+            smoothing=0.0
+        )
+
+        return rbf, included_pos_cols, included_B_cols
+
+    rbf, included_pos_cols, included_B_cols =  RBF_missing_data(missing_sc=missing_sc)
+
+
+    def sample_slice(coord1, coord2, const_coord, plane, nx, ny):
+        """
+        Samples a slice of the RBF reconstruction at give coordinates
+        :kword coord1: array of x coordinates
+        :kword coord2: array of y coordinates
+        :kword const_coord: Constant coordinate, last location coordinate of plane
+        :kword plane: Plane wanted to be sliced
+        
+        Ex. use: 
+            xs = np.linspace(bary[0]-L_m, bary[0]+L_m, nx)
+            ys = np.linspace(bary[1]-L_m, bary[1]+L_m, ny)
+
+            XY = sample_slice(xs, ys, bary[2], "xy", nx, ny)
+        """
+        if plane == "xy":
+            X, Y = np.meshgrid(coord1, coord2)
+            pts  = np.column_stack([X.ravel(), Y.ravel(),
+                                    np.full(X.size, const_coord)])
+            Bxyz = rbf(pts)
+            Bx, By, Bz = [Bxyz[:,i].reshape(ny,nx) for i in range(3)]
+            return X, Y, Bx, By, Bz
+
+        elif plane == "xz":
+            X, Z = np.meshgrid(coord1, coord2)
+            pts  = np.column_stack([X.ravel(),
+                                    np.full(X.size, const_coord),
+                                    Z.ravel()])
+            Bxyz = rbf(pts)
+            Bx, By, Bz = [Bxyz[:,i].reshape(ny,nx) for i in range(3)]
+            return X, Z, Bx, Bz, By
+
+        elif plane == "yz":
+            Y, Z = np.meshgrid(coord1, coord2)
+            pts  = np.column_stack([np.full(Y.size, const_coord),
+                                    Y.ravel(), Z.ravel()])
+            Bxyz = rbf(pts)
+            Bx, By, Bz = [Bxyz[:,i].reshape(ny,nx) for i in range(3)]
+            return Y, Z, By, Bz, Bx
+        else:
+            raise "Invalid Plane, Options: xy, xz, yz"     
+
+
+
+    def sample_block(coord1, coord2, coord3, nx, ny, nz):
+        """
+        Samples a slice of the RBF reconstruction at give coordinates
+        :kword coord1: array of x coordinates
+        :kword coord2: array of y coordinates
+        :kword const_coord: Constant coordinate, last location coordinate of plane
+        :kword plane: Plane wanted to be sliced
+        
+        Ex. use: 
+            xs = np.linspace(bary[0]-L_m, bary[0]+L_m, nx)
+            ys = np.linspace(bary[1]-L_m, bary[1]+L_m, ny)
+
+            XY = sample_slice(xs, ys, bary[2], "xy", nx, ny)
+        """
+        X, Y, Z = np.meshgrid(coord1, coord2, coord3)
+        pts  = np.column_stack([X.ravel(), Y.ravel(), Z.ravel()])
         Bxyz = rbf(pts)
-        Bx, By, Bz = [Bxyz[:,i].reshape(ny,nx) for i in range(3)]
-        return X, Y, Bx, By, Bz
+        Bx, By, Bz = [Bxyz[:,i].reshape(len(coord2),len(coord1),len(coord3)) for i in range(3)]
+        return X, Y, Z, Bx, By, Bz
 
-    elif plane == "xz":
-        X, Z = np.meshgrid(coord1, coord2)
-        pts  = np.column_stack([X.ravel(),
-                                np.full(X.size, const_coord),
-                                Z.ravel()])
-        Bxyz = rbf(pts)
-        Bx, By, Bz = [Bxyz[:,i].reshape(ny,nx) for i in range(3)]
-        return X, Z, Bx, Bz, By
-
-    elif plane == "yz":
-        Y, Z = np.meshgrid(coord1, coord2)
-        pts  = np.column_stack([np.full(Y.size, const_coord),
-                                Y.ravel(), Z.ravel()])
-        Bxyz = rbf(pts)
-        Bx, By, Bz = [Bxyz[:,i].reshape(ny,nx) for i in range(3)]
-        return Y, Z, By, Bz, Bx
-    else:
-        raise "Invalid Plane, Options: xy, xz, yz"     
-
-def sample_slice_vlas(vlsvfile = None, plane = None, time = None, nx = 200, ny = 200,L_Re = 1.2):
+    def sample_slice_vlas(vlsvfile = None, plane = None, time = None, nx = 200, ny = 200,L_Re = 1.2):
+        
+        #file
+        if time != None:
+            file = f"/wrk-vakka/group/spacephysics/vlasiator/3D/FHA/bulk1/bulk1.000{time}.vlsv"
+            print(file)
+            vlsvfile = pt.vlsvfile.VlsvReader(file)
+        elif vlsvfile != None:
+            vlsvfile = vlsvfile
+        else:
+            raise "Provide vlasiator file or time"
+        if plane == None:
+            raise "Provide plane to slice"
+        init_pts = np.vstack(list(sc_init.values()))
+        bary = init_pts.mean(axis=0)
     
-    #file
-    if time != None:
+        """
+        main thing to note about this function is that the output
+        order of coordinates is dependant on chosen plane
+        ex. yz plane will output coordinates as Y, Z, By, Bz, Bx
+        Out of plane component will always be last
+        """
+        L_m = L_Re*R_e
+        if plane == "xy":
+            coord1 = np.linspace(bary[0]-L_m,bary[0]+L_m,nx)
+            coord2 = np.linspace(bary[1]-L_m,bary[1]+L_m,ny)
+            
+            const_coord = bary[2]
+            X, Y = np.meshgrid(coord1, coord2)                 
+            pts  = np.column_stack([X.ravel(), Y.ravel(),
+                                    np.full(X.size, const_coord)])
+            Bxyz = vlsvfile.read_interpolated_variable("vg_b_vol", pts)
+            Bx, By, Bz = (Bxyz[:, i].reshape(nx, ny) for i in range(3))
+            return X, Y, Bx, By, Bz                            
+        elif plane == "xz":
+            coord1 = np.linspace(bary[0]-L_m,bary[0]+L_m,nx)
+            coord2 = np.linspace(bary[2]-L_m,bary[2]+L_m,ny)
+            const_coord = bary[1]
+            X, Z = np.meshgrid(coord1, coord2)                 
+            pts  = np.column_stack([X.ravel(),
+                                    np.full(X.size, const_coord),
+                                    Z.ravel()])
+            Bxyz = vlsvfile.read_interpolated_variable("vg_b_vol", pts)
+            Bx, By, Bz = (Bxyz[:, i].reshape(nx, ny) for i in range(3))
+            return X, Z, Bx, Bz, By                            
+        elif plane == "yz":
+            coord1 = np.linspace(bary[1]-L_m,bary[1]+L_m,nx)
+            coord2 = np.linspace(bary[2]-L_m,bary[2]+L_m,ny)
+            const_coord = bary[0]
+            Y, Z = np.meshgrid(coord1, coord2)                
+            pts  = np.column_stack([np.full(Y.size, const_coord),
+                                    Y.ravel(), Z.ravel()])
+            Bxyz = vlsvfile.read_interpolated_variable("vg_b_vol", pts)
+            Bx, By, Bz = (Bxyz[:, i].reshape(nx, ny) for i in range(3))
+            return Y, Z, By, Bz, Bx   
+        else:
+            raise "Invalid Plane, Options: xy, xz, yz"                        
+                            
+    def plot_vlas_slices(time, nx = 200, ny = 200, L_Re = 1.2, output_dir = None, output_file = None, save = True):
+        """
+        Plotting vlasiators slices at the barycenter of the spacecraft constellations
+
+        :kword time: Time of reconstruction 
+        :kword save: Save figure 
+        :kword L_Re: Set size of slice
+        :kword output_dir: Output file directory for saving figure
+        :kword output_file: Output file name 
+        
+        """
         file = f"/wrk-vakka/group/spacephysics/vlasiator/3D/FHA/bulk1/bulk1.000{time}.vlsv"
         print(file)
         vlsvfile = pt.vlsvfile.VlsvReader(file)
-    elif vlsvfile != None:
-        vlsvfile = vlsvfile
-    else:
-        raise "Provide vlasiator file or time"
-    if plane == None:
-        raise "Provide plane to slice"
-    init_pts = np.vstack(list(sc_init.values()))
-    bary = init_pts.mean(axis=0)
-   
-    """
-    main thing to note about this function is that the output
-    order of coordinates is dependant on chosen plane
-    ex. yz plane will output coordinates as Y, Z, By, Bz, Bx
-    Out of plane component will always be last
-    """
-    L_m = L_Re*R_e
-    if plane == "xy":
-        coord1 = np.linspace(bary[0]-L_m,bary[0]+L_m,nx)
-        coord2 = np.linspace(bary[1]-L_m,bary[1]+L_m,ny)
+        XY = sample_slice_vlas(vlsvfile = vlsvfile, plane = "xy", nx=nx, ny=ny, L_Re=L_Re)
+        XZ = sample_slice_vlas(vlsvfile = vlsvfile, plane = "xz", nx=nx, ny=ny, L_Re=L_Re)
+        YZ = sample_slice_vlas(vlsvfile = vlsvfile, plane = "yz", nx=nx, ny=ny, L_Re=L_Re)
+
+        init_pts = np.vstack(list(sc_init.values()))
+
+        fig, axs = plt.subplots(1, 3, figsize=(15,5), constrained_layout=True)
+        for ax, (data, title) in zip(axs, zip([XY,XZ,YZ], ["X-Y","X-Z","Y-Z"])):
         
-        const_coord = bary[2]
-        X, Y = np.meshgrid(coord1, coord2)                 
-        pts  = np.column_stack([X.ravel(), Y.ravel(),
-                                np.full(X.size, const_coord)])
-        Bxyz = vlsvfile.read_interpolated_variable("vg_b_vol", pts)
-        Bx, By, Bz = (Bxyz[:, i].reshape(nx, ny) for i in range(3))
-        return X, Y, Bx, By, Bz                            
-    elif plane == "xz":
-        coord1 = np.linspace(bary[0]-L_m,bary[0]+L_m,nx)
-        coord2 = np.linspace(bary[2]-L_m,bary[2]+L_m,ny)
-        const_coord = bary[1]
-        X, Z = np.meshgrid(coord1, coord2)                 
-        pts  = np.column_stack([X.ravel(),
-                                np.full(X.size, const_coord),
-                                Z.ravel()])
-        Bxyz = vlsvfile.read_interpolated_variable("vg_b_vol", pts)
-        Bx, By, Bz = (Bxyz[:, i].reshape(nx, ny) for i in range(3))
-        return X, Z, Bx, Bz, By                            
-    elif plane == "yz":
-        coord1 = np.linspace(bary[1]-L_m,bary[1]+L_m,nx)
-        coord2 = np.linspace(bary[2]-L_m,bary[2]+L_m,ny)
-        const_coord = bary[0]
-        Y, Z = np.meshgrid(coord1, coord2)                
-        pts  = np.column_stack([np.full(Y.size, const_coord),
-                                Y.ravel(), Z.ravel()])
-        Bxyz = vlsvfile.read_interpolated_variable("vg_b_vol", pts)
-        Bx, By, Bz = (Bxyz[:, i].reshape(nx, ny) for i in range(3))
-        return Y, Z, By, Bz, Bx   
-    else:
-        raise "Invalid Plane, Options: xy, xz, yz"                        
-                           
-def plot_vlas_slices(time, nx = 200, ny = 200, L_Re = 1.2, output_dir = None, output_file = None, save = True):
-    """
-    Plotting vlasiators slices at the barycenter of the spacecraft constellations
+            C1, C2, U, V, W = data
 
-    :kword time: Time of reconstruction 
-    :kword save: Save figure 
-    :kword L_Re: Set size of slice
-    :kword output_dir: Output file directory for saving figure
-    :kword output_file: Output file name 
-    
-    """
-    file = f"/wrk-vakka/group/spacephysics/vlasiator/3D/FHA/bulk1/bulk1.000{time}.vlsv"
-    print(file)
-    vlsvfile = pt.vlsvfile.VlsvReader(file)
-    XY = sample_slice_vlas(vlsvfile = vlsvfile, plane = "xy", nx=nx, ny=ny, L_Re=L_Re)
-    XZ = sample_slice_vlas(vlsvfile = vlsvfile, plane = "xz", nx=nx, ny=ny, L_Re=L_Re)
-    YZ = sample_slice_vlas(vlsvfile = vlsvfile, plane = "yz", nx=nx, ny=ny, L_Re=L_Re)
+            mag = np.hypot(U, V)
+            cf  = ax.contourf(C1, C2, W, 30, cmap="coolwarm")
+            ax.streamplot(C1, C2, U, V,
+                        color=mag, cmap="magma", density=1.5, linewidth=0.5)
+            if title == "X-Y":
+                sc_u = init_pts[:,0]; sc_v = init_pts[:,1]
+                out_comp = "Z"
+            elif title == "X-Z":
+                sc_u = init_pts[:,0]; sc_v = init_pts[:,2]
+                out_comp = "Y"
+            else:  
+                sc_u = init_pts[:,1]; sc_v = init_pts[:,2]
+                out_comp = "X"
 
-    init_pts = np.vstack(list(sc_init.values()))
+            ax.scatter(sc_u, sc_v, c="k", s=20, label="SC")
+            ax.legend(loc="upper right", fontsize="small")
+            ax.margins(0)
+            ax.set_aspect("equal")
+            ax.set_title(f"{title}")
+            ax.set_xlabel(f"{title[0]} (m)")
+            ax.set_ylabel(f"{title[-1]} (m)")
 
-    fig, axs = plt.subplots(1, 3, figsize=(15,5), constrained_layout=True)
-    for ax, (data, title) in zip(axs, zip([XY,XZ,YZ], ["X-Y","X-Z","Y-Z"])):
-       
-        C1, C2, U, V, W = data
-
-        mag = np.hypot(U, V)
-        cf  = ax.contourf(C1, C2, W, 30, cmap="coolwarm")
-        ax.streamplot(C1, C2, U, V,
-                      color=mag, cmap="magma", density=1.5, linewidth=0.5)
-        if title == "X-Y":
-            sc_u = init_pts[:,0]; sc_v = init_pts[:,1]
-            out_comp = "Z"
-        elif title == "X-Z":
-            sc_u = init_pts[:,0]; sc_v = init_pts[:,2]
-            out_comp = "Y"
-        else:  
-            sc_u = init_pts[:,1]; sc_v = init_pts[:,2]
-            out_comp = "X"
-
-        ax.scatter(sc_u, sc_v, c="k", s=20, label="SC")
-        ax.legend(loc="upper right", fontsize="small")
-        ax.margins(0)
-        ax.set_aspect("equal")
-        ax.set_title(f"{title}")
-        ax.set_xlabel(f"{title[0]} (m)")
-        ax.set_ylabel(f"{title[-1]} (m)")
-
-        fig.colorbar(cf, ax=ax, orientation="vertical",
-                     label=fr"$B_{{{out_comp}}}$")
-    fig.suptitle(f"Vlasiator slices at Time = {time} s")
-    
-    if output_dir == None:
-        output_dir = "~/"
-
-    if output_file == None:
-        output_file = f"vlasitor_slices_{time}s.png"
-    
-    output_file = output_dir+output_file
-    if save: 
-        plt.savefig(output_file)
-    plt.close()
-
-    return    
-
-def plot_rbf_slices(time, nx = 200, ny = 200, L_Re = 1.2, output_dir = None, output_file = None):
-    """
-    Plots the RBF reconstruction at the bary center of the spacecraft constellation
-
-    :kword time: Time of reconstruction 
-    :kword L_Re: Set size of slice
-    :kword output_dir: Output file directory for saving figure
-    :kword output_file: Output file name 
-    
-    """
-    #Find coordinates of times
-    row = df[df["Timeframe"] == time].iloc[0]
-    cluster = row[pos_cols].to_numpy().reshape(-1,3)
-    bary    = cluster.mean(axis=0)
-
-    L_m = L_Re * R_e
-    xs = np.linspace(bary[0]-L_m, bary[0]+L_m, nx)
-    ys = np.linspace(bary[1]-L_m, bary[1]+L_m, ny)
-    zs = np.linspace(bary[2]-L_m, bary[2]+L_m, ny)
-
-    #Sample the coordinates 
-    XY = sample_slice(xs, ys, bary[2], "xy", nx, ny)
-    XZ = sample_slice(xs, zs, bary[1], "xz", nx, ny)
-    YZ = sample_slice(ys, zs, bary[0], "yz", nx, ny)
-
-    # Plot
-    fig, axs = plt.subplots(1, 3, figsize=(15,5), constrained_layout=True)
-    for ax, (data, title) in zip(axs, zip([XY,XZ,YZ], ["X-Y","X-Z","Y-Z"])):
-        C1, C2, U, V, W = data
+            fig.colorbar(cf, ax=ax, orientation="vertical",
+                        label=fr"$B_{{{out_comp}}}$")
+        fig.suptitle(f"Vlasiator slices at Time = {time} s")
         
-        mag = np.hypot(U, V)
-        cf  = ax.contourf(C1, C2, W, 30, cmap="coolwarm")
-        ax.streamplot(C1, C2, U, V,
-                      color=mag, cmap="magma", density=1.5, linewidth=0.5)
-        if title == "X-Y":
-            sc_u = cluster[:,0]; sc_v = cluster[:,1]
-            out_comp = "Z"
-        elif title == "X-Z":
-            sc_u = cluster[:,0]; sc_v = cluster[:,2]
-            out_comp = "Y"
-        else:  
-            sc_u = cluster[:,1]; sc_v = cluster[:,2]
-            out_comp = "X"
-
-        ax.scatter(sc_u, sc_v, c="k", s=20, label="SC")
-        ax.legend(loc="upper right", fontsize="small")
-        ax.margins(0)
-        ax.set_aspect("equal")
-        ax.set_title(f"{title}")
-        ax.set_xlabel(f"{title[0]} (m)")
-        ax.set_ylabel(f"{title[-1]} (m)")
-
-        fig.colorbar(cf, ax=ax, orientation="vertical",
-                     label=fr"$B_{{{out_comp}}}$")
-    fig.suptitle(f"RBF reconstruction at Time = {row['Timeframe']:.1f} s")
-
-    if output_dir == None:
-        output_dir = "~/"
-
-    if output_file == None:
-        output_file = f"RBF_timeseries_reconstruction_{time}s.png"
-    
-    output_file = output_dir+output_file
-            
-    plt.savefig(output_file)
-    plt.close()
-    
-    return
-
-def plot_vlas_RBF_error(time, save = True, rel_error = True, L_Re = 1.2, output_dir = None, output_file = None, nx = 200, ny = 200, err_vmax = 1.5e-8):
-    """
-    Creates a 3x3 plot of countours  (First row Vlasiator xy, xz and yz planes with streamlines,
-    Second row RBF xy, xz, yz planes with streamliens, Third row point-wise error comparison of 
-    the magnetic field strenght of the first two rows)  
-    
-    time : Time of reconstruction 
-    save : Save figure
-    L_Re : Set size of slice
-    nx, ny : Grid resolution
-    rel_error : Toggle between relative error and absolute error
-    err_vmax : Set max error for the absolute error (should also be implemented for relative error)
-    output_dir : Output file directory for saving figure
-    output_file : Output file name 
-    
-    TODO: Recenter RBF points to original points. Could be just set vlasiator grid for RBF grid
-    """
-    #Vlasitor DATA
-    file = f"/wrk-vakka/group/spacephysics/vlasiator/3D/FHA/bulk1/bulk1.000{time}.vlsv"
-    print(file)
-    vlsvfile = pt.vlsvfile.VlsvReader(file)
-    XY_vlas = sample_slice_vlas(vlsvfile = vlsvfile, plane = "xy", nx=nx, ny=ny, L_Re=L_Re)
-    XZ_vlas = sample_slice_vlas(vlsvfile = vlsvfile, plane = "xz", nx=nx, ny=ny, L_Re=L_Re)
-    YZ_vlas = sample_slice_vlas(vlsvfile = vlsvfile, plane = "yz", nx=nx, ny=ny, L_Re=L_Re)
-
-    init_pts = np.vstack(list(sc_init.values()))
-    vlas_planes = [XY_vlas, XZ_vlas, YZ_vlas]
-    
-    #RBF DATA
-    row = df[df["Timeframe"] == time].iloc[0]
-    cluster = row[pos_cols].to_numpy().reshape(-1,3)
-    bary    = cluster.mean(axis=0)
-
-    L_m = L_Re * R_e
-    xs = np.linspace(bary[0]-L_m, bary[0]+L_m, nx)
-    ys = np.linspace(bary[1]-L_m, bary[1]+L_m, ny)
-    zs = np.linspace(bary[2]-L_m, bary[2]+L_m, ny)
-
-    XY_rbf = sample_slice(xs, ys, bary[2], "xy", nx, ny)
-    XZ_rbf = sample_slice(xs, zs, bary[1], "xz", nx, ny)
-    YZ_rbf = sample_slice(ys, zs, bary[0], "yz", nx, ny)
-    
-    rbf_planes = [XY_rbf,XZ_rbf,YZ_rbf]
-
-
-    fig, axes = plt.subplots(3,3,figsize = (13,11), constrained_layout=True)
-    fig.dpi = 500
-    panels = [
-    ("X-Y",("X","Y","z")),
-    ("X-Z",("X","Z","y")),
-    ("Y-Z",("Y","Z","x")),
-    ]
-    if rel_error:
-        err_vmin, err_vmax = 0.0, 50.0                     
-        levels   = np.linspace(err_vmin, err_vmax, 31)     
-        norm     = mpl.colors.Normalize(vmin=err_vmin, vmax=err_vmax)
-        error_lbl = "Error (%)"
-        error_title = "point-wise error (%)"
-    else:
-
-        err_vmin, err_vmax = 0.0, err_vmax
-        levels   = np.linspace(err_vmin, err_vmax, 31)
-        norm     = mpl.colors.Normalize(vmin=err_vmin, vmax=err_vmax)
-        error_lbl = "|ΔB|"  
-        error_title = "Absolute point-wise error"          
-
-    clus_size = 20
-
-    for i, (vlas_plane,rbf_plane, panel) in enumerate(zip(vlas_planes,rbf_planes,panels)):
-
-        #Component naming here wrong but makes no difference with absolute error
-        Pr, Qr, Bxr, Byr, Bzr = rbf_plane
-        Pv, Qv, Bxv, Byv, Bzv = vlas_plane     
-        
-        dBx = Bxr - Bxv
-        dBy = Byr - Byv
-        dBz = Bzr - Bzv
-
-        dB_mag = np.sqrt(dBx**2 + dBy**2 + dBz**2)   
-        Bv_mag = np.sqrt(Bxv**2+Byv**2+Bzv**2)
-        if rel_error:
-            error = 100*dB_mag/Bv_mag
-        else: 
-            error = dB_mag
-        title, (lab1, lab2, lab3) = panel
-        Pr, Qr = rbf_plane[0], rbf_plane[1]
-    
-        #
-        #Vlasiator Plotting
-        #
-        cont_0 = axes[0,i].contourf(Pv,Qv,vlas_plane[-1], 30, cmap="coolwarm")
-        speed = np.hypot(vlas_plane[2], vlas_plane[3])
-        axes[0,i].streamplot(Pv, Qv, vlas_plane[2], vlas_plane[3],
-                    color=speed, cmap="magma", density=2, linewidth = 0.4)
-        
-        if lab1 == "X":             
-            u_v = init_pts[:,0]
-            u_r = cluster[:,0] 
-        elif lab1 == "Y":           
-            u_v = init_pts[:,1]
-            u_r = cluster[:,1]
-        else:
-            u_v = init_pts[:,2]
-            u_r = cluster[:,2]
-        if lab2 == "Y":             
-            v_v = init_pts[:,1]
-            v_r = cluster[:,1]
-        elif lab2 == "Z":           
-            v_v = init_pts[:,2]
-            v_r = cluster[:,2]
-        else:
-            v_v = init_pts[:,0]
-            v_r = cluster[:,0]
-        
-        cbar = fig.colorbar(cont_0, ax=axes[0,i], orientation="vertical", shrink = 0.8)
-        cbar.set_label(f"$B_{lab3}$")
-        axes[0,i].scatter(u_v, v_v, c="k", s=clus_size, label="spacecraft")
-        axes[0,i].margins(0)
-        #axes[0,i].set_xlabel(f"{lab1}  (m)")
-        axes[0,i].set_ylabel(f"{lab2} (m)")
-        axes[0,i].set_aspect("equal")
-        axes[0,0].legend(loc="upper right",fontsize="small")
-        axes[0,i].set_title(title)
-        #axes[0,i].legend(loc= "upper right",fontsize="small")
-        #
-        #RBF plotting
-        #
-        cont_1 = axes[1,i].contourf(Pr,Qr,rbf_plane[-1], 30, cmap="coolwarm")
-        speed = np.hypot(rbf_plane[2], rbf_plane[3])
-        axes[1,i].streamplot(Pr, Qr, rbf_plane[2], rbf_plane[3],
-                    color=speed, cmap="magma", density=2, linewidth = 0.4)
-        
-        cbar = fig.colorbar(cont_1, ax=axes[1,i], orientation="vertical", shrink = 0.8)
-        cbar.set_label(f"$B_{lab3}$")
-        axes[1,i].scatter(u_r, v_r, c="k", s=clus_size, label="spacecraft")
-        axes[1,i].margins(0)
-        #axes[1,i].set_xlabel(f"{lab1}  (10³ km)")
-        axes[1,i].set_ylabel(f"{lab2} (m)")
-        axes[1,i].set_aspect("equal")
-        axes[1,0].legend(loc="upper right",fontsize="small")
-        #axes[1,i].set_title(title)
-        #
-        #POINT-WISE ERROR
-        #
-        cf = axes[2,i].contourf(Pv, Qv, error, levels = levels, cmap="viridis", norm = norm, extend = "max")
-      
-        axes[2,i].margins(0) 
-        axes[2,i].scatter(u_v, v_v, c="k", s=clus_size, label="spacecraft")
-        axes[2,i].set_xlabel(f"{lab1} (m)")
-        axes[2,i].set_ylabel(f"{lab2} (m)")
-        axes[2,i].set_aspect("equal")
-        #axes[2,i].set_title(title)
-        axes[2,0].legend(loc="upper right",fontsize="small")
-    
-    sm = mpl.cm.ScalarMappable(cmap="viridis",
-                            norm=norm)
-
-    fig.colorbar(sm, ax=axes[2,:].ravel().tolist(),
-                orientation="vertical", label=error_lbl, shrink = 0.8)
-    #Label each row
-    row_y = [0.96, 0.64, 0.32]  
-
-    for y, txt in zip(row_y,
-                    ["Vlasiator",
-                    "RBF",
-                    error_title]):
-        fig.text(0.5, y, txt, ha="center", va="center", fontsize=20)
-
-    #fig.tight_layout()
-    fig.suptitle(f"Comparison of Vlasiator and RBF reconstruction at time = {time}s", fontsize = 20)
-    if save:
         if output_dir == None:
             output_dir = "~/"
 
         if output_file == None:
-            if rel_error:
-                output_file = f"full_vlas_rbf_comp_time={time}_L={L_Re}_GOOD_scale.png"
-            else: 
-                output_file = f"full_vlas_rbf_comp_time={time}_L={L_Re}_abs_error.png"
+            output_file = f"vlasitor_slices_{time}s.png"
         
-        output_file = output_dir+output_file           
-        plt.savefig(output_file)    
-    return
-
-def Wasserstein_Hull(time, type = "filled", save = True, buffer = 0, error_cutoff = 20, info = True, output_dir =None, output_file =None):
-    """
-    Changes to be made: with time determine RBF sc locations, but
-    have vlasiator stay in place and just change file time
-    """
-    from scipy.spatial import ConvexHull, Delaunay
-    file = f"/wrk-vakka/group/spacephysics/vlasiator/3D/FHA/bulk1/bulk1.000{time}.vlsv"
-    if info:
-        print(file)
-    vlsvfile = pt.vlsvfile.VlsvReader(file)
-    
-    #Vlasitor convex hull from initial spacecraft locations
-    init_pts = np.vstack(list(sc_init.values()))
-    hull_init = ConvexHull(init_pts)
-    dela_init = Delaunay(init_pts[hull_init.vertices])
-
-    buf = buffer * R_e
-    mins_i = init_pts.min(axis=0) - buf
-    maxs_i = init_pts.max(axis=0) + buf
-    nx = ny = nz = 60
-    xs_i = np.linspace(mins_i[0], maxs_i[0], nx)
-    ys_i = np.linspace(mins_i[1], maxs_i[1], ny)
-    zs_i = np.linspace(mins_i[2], maxs_i[2], nz)
-    X_i, Y_i, Z_i = np.meshgrid(xs_i, ys_i, zs_i, indexing="ij")
-
-    pts_i = np.column_stack([X_i.ravel(), Y_i.ravel(), Z_i.ravel()])
-    mask_i = dela_init.find_simplex(pts_i) >= 0
-    B_vlas = vlsvfile.read_interpolated_variable("vg_b_vol", pts_i[mask_i])
-
-    #RBF convex hull points from "moved" location
-    row = df[df["Timeframe"] == time].iloc[0]
-    dyn_pts = row[pos_cols].to_numpy().reshape(-1, 3)
-    hull_dyn = ConvexHull(dyn_pts)
-    dela_dyn = Delaunay(dyn_pts[hull_dyn.vertices])
-
-    mins_d = dyn_pts.min(axis=0) - buf
-    maxs_d = dyn_pts.max(axis=0) + buf
-    xs_d = np.linspace(mins_d[0], maxs_d[0], nx)
-    ys_d = np.linspace(mins_d[1], maxs_d[1], ny)
-    zs_d = np.linspace(mins_d[2], maxs_d[2], nz)
-    X_d, Y_d, Z_d = np.meshgrid(xs_d, ys_d, zs_d, indexing="ij")
-
-    pts_d = np.column_stack([X_d.ravel(), Y_d.ravel(), Z_d.ravel()])
-    mask_d = dela_dyn.find_simplex(pts_d) >= 0
-    B_rbf = rbf(pts_d[mask_d])
-
-    #Collect W_rels into array for plotting
-    W_rels = []
-    for comp in range(3):
-        comp_vlas = B_vlas[:, comp]
-        comp_rbf = B_rbf[:, comp]
-        W1 = wasserstein_distance(comp_rbf, comp_vlas)
-        med = np.median(comp_vlas)
-        Wden = wasserstein_distance(comp_vlas, np.full_like(comp_vlas, med))
-        W_rels.append(float(round(W1/Wden, 4)))
-
-    if info:
-        dB = np.linalg.norm(B_rbf-B_vlas,axis=1)
-        B_vlas_mag = np.linalg.norm(B_vlas,axis=1)
-        valid = np.isfinite(dB) & np.isfinite(B_vlas_mag) & (B_vlas_mag > 0)
-
-        error_per = np.full_like(dB, np.nan)
-        error_per[valid] = 100 * dB[valid] / B_vlas_mag[valid]
-
-        fraction = np.count_nonzero(error_per[valid] < error_cutoff) / np.count_nonzero(valid)
-        print(f"Fraction of points with <{error_cutoff}%: {fraction:.3f}")
-        
-    if save:
-        labels = [r"$B_x$", r"$B_y$", r"$B_z$"]
-        fig, axes = plt.subplots(1, 3, figsize=(12,4))
-        for ax, lbl, vlas_comp, rbf_comp, W in zip(axes, labels, 
-                                        B_vlas.T, B_rbf.T, W_rels):
-            lo, hi = np.percentile(np.concatenate((vlas_comp, rbf_comp)), [0.5, 99.5])
-            bins = np.linspace(lo, hi, 41)
-            if type == "filled":
-                ax.hist(vlas_comp, bins=bins, alpha=0.5, label="Vlasiator")
-                ax.hist(rbf_comp, bins=bins, alpha=0.5, label="RBF")
-            else:
-                ax.hist(vlas_comp, bins=bins, histtype="step", label="Vlasiator")
-                ax.hist(rbf_comp, bins=bins, histtype="step", label="RBF")
-            ax.axvline(np.median(vlas_comp), ls="--", color="k")
-            ax.set_title(f"$W_{{rel}}$={W}")
-            ax.set_xlabel(f"{lbl}")
-            ax.legend()
-            ax.grid(alpha=0.3)
-
-        fig.suptitle(f"Component distributions  t={time}s")
-
-
-        if output_dir == None:
-            output_dir = "~/"
-
-        if output_file == None:
-            output_file = f"Wassertein_hull_{type}_{time}s.png"
         output_file = output_dir+output_file
+        if save: 
+            plt.savefig(output_file)
+        plt.close()
+
+        return    
+
+    def plot_rbf_slices(time, nx = 100, ny = 100, L_Re = 1.2, output_dir = None, output_file = None):
+        """
+        Plots the RBF reconstruction at the bary center of the spacecraft constellation
+
+        :kword time: Time of reconstruction 
+        :kword L_Re: Set size of slice
+        :kword output_dir: Output file directory for saving figure
+        :kword output_file: Output file name 
         
+        """
+        #Find coordinates of times
+        row = df[df["Timeframe"] == time].iloc[0]
+        cluster = row[pos_cols].to_numpy().reshape(-1,3)
+        bary    = cluster.mean(axis=0)
+
+        L_m = L_Re * R_e
+        xs = np.linspace(bary[0]-L_m, bary[0]+L_m, nx)
+        ys = np.linspace(bary[1]-L_m, bary[1]+L_m, ny)
+        zs = np.linspace(bary[2]-L_m, bary[2]+L_m, ny)
+
+        #Sample the coordinates 
+        XY = sample_slice(xs, ys, bary[2], "xy", nx, ny)
+        XZ = sample_slice(xs, zs, bary[1], "xz", nx, ny)
+        YZ = sample_slice(ys, zs, bary[0], "yz", nx, ny)
+
+        # Plot
+        fig, axs = plt.subplots(1, 3, figsize=(15,5), constrained_layout=True)
+        for ax, (data, title) in zip(axs, zip([XY,XZ,YZ], ["X-Y","X-Z","Y-Z"])):
+            C1, C2, U, V, W = data
+            
+            mag = np.hypot(U, V)
+            cf  = ax.contourf(C1, C2, W, 30, cmap="coolwarm")
+            ax.streamplot(C1, C2, U, V,
+                        color=mag, cmap="magma", density=1.5, linewidth=0.5)
+            if title == "X-Y":
+                sc_u = cluster[:,0]; sc_v = cluster[:,1]
+                out_comp = "Z"
+            elif title == "X-Z":
+                sc_u = cluster[:,0]; sc_v = cluster[:,2]
+                out_comp = "Y"
+            else:  
+                sc_u = cluster[:,1]; sc_v = cluster[:,2]
+                out_comp = "X"
+
+            ax.scatter(sc_u, sc_v, c="k", s=20, label="SC")
+            ax.legend(loc="upper right", fontsize="small")
+            ax.margins(0)
+            ax.set_aspect("equal")
+            ax.set_title(f"{title}")
+            ax.set_xlabel(f"{title[0]} (m)")
+            ax.set_ylabel(f"{title[-1]} (m)")
+
+            fig.colorbar(cf, ax=ax, orientation="vertical",
+                        label=fr"$B_{{{out_comp}}}$")
+        fig.suptitle(f"RBF reconstruction at Time = {row['Timeframe']:.1f} s")
+
+        if output_dir == None:
+            output_dir = "./RBF_outputs/"
+
+        if output_file == None:
+            if missing_sc is not None:
+                miss ="no_"+"".join(missing_sc)
+            else:
+                miss = ""
+            output_file = f"RBF_timeseries_reconstruction_{time}s{miss}.png"
         
+        output_file = output_dir+output_file
+                
         plt.savefig(output_file)
         plt.close(fig)
-
-    return W_rels, round(fraction,3)
-
-def plot_Wass_time(save =True, error_cutoff = 20, output_dir = None, output_file = None):
-
-    """
-    Convex hull at time index and calculate Wasserstein distance from that. 
-    Calculate Wasserstein distance from hull also in Vlasiator timestep 
-    Plot W_rel/time
-    for time in times:
-        read Vlasitor
-        get points in hull for vlasitor and RBF
-        Calculate W_rels
-    Plot
-    """
-    times = df["Timeframe"]
-    W_x,W_y,W_z,error = [], [], [], []
-    for t in times:
-        data, error_frac  = Wasserstein_Hull(t, save = False,error_cutoff=error_cutoff)
-        W_x.append(data[0])
-        W_y.append(data[1])
-        W_z.append(data[2])
-        error.append(error_frac)
-    print(f"W_rel 50th percentiles: W_x = {np.percentile(W_x,50)} W_y = {np.percentile(W_y,50)}, W_z = {np.percentile(W_z,50)}")
-    if save:
-        fig, ax = plt.subplots(1, 2, figsize=(12,5))
-    
-        ax[0].plot(times, W_x, label=r'$W_x$')
-        ax[0].plot(times, W_y, label=r'$W_y$')
-        ax[0].plot(times, W_z, label=r'$W_z$')
-
-        ax[0].set_xlabel("Time (s)")
-        ax[0].set_ylabel(r"Relative Wasserstein Distance $W_{\mathrm{rel}}$")
-        ax[0].set_title("Wasserstein Distance vs Time")
-        ax[0].grid(True, alpha=0.3)
-        ax[0].legend()
+        plt.close()
         
-        ax[1].plot(times, error)
+        return
+
+    def plot_rbf_full_slice(time, nx = 200, ny = 200, L_Re = 1.2, output_dir = None, output_file = None):
+        """
+        Plots the RBF reconstruction at the bary center of the spacecraft constellation
+
+        :kword time: Time of reconstruction 
+        :kword L_Re: Set size of slice
+        :kword output_dir: Output file directory for saving figure
+        :kword output_file: Output file name 
         
-        ax[1].set_xlabel("Time (s)")
-        ax[1].set_ylabel(r"Point-wise error")
-        ax[1].set_title(f"Fraction of points with error <{error_cutoff}%")
-        ax[1].grid(True, alpha=0.3)
-        fig.suptitle(f"Bulk velocity: ({np.round(vg_v_x,1)},{np.round(vg_v_y,1)},{np.round(vg_v_z,1)}) m/s")
-        fig.tight_layout()
+        """
+        #Find coordinates of times
+        # row = df[df["Timeframe"] == time].iloc[0]
+        # cluster = row[pos_cols].to_numpy().reshape(-1,3)
+        dyn_pts = centers.reshape(-1, 3)
+
+        nz=5
+
+        bary    = dyn_pts.mean(axis=0)
+        mins = dyn_pts.min(axis=0)
+        maxs = dyn_pts.max(axis=0)
+        yf = 1
+        L_m = L_Re * R_e
+        xs = np.linspace(mins[0]-L_m, maxs[0]+L_m, nx)
+        ys = np.linspace(mins[1]-L_m*yf, maxs[1]+L_m*yf, ny)
+        zs = np.linspace(bary[2]-L_m, bary[2]+L_m, nz)
+
+        # print(xs,ys,zs)
+
+        #Sample the coordinates 
+        curl=True            
+        if curl:
+            XYZ = sample_block(xs, ys, zs, nx, ny, nx)
+        else:
+            XY = sample_slice(xs, ys, bary[2], "xy", nx, ny)
+        # XZ = sample_slice(xs, zs, bary[1], "xz", nx, ny)
+        # YZ = sample_slice(ys, zs, bary[0], "yz", nx, ny)
+        
+
+        
+        # Plot
+        fig = plt.figure(figsize=(10,8), constrained_layout=True)
+        axs = [fig.add_subplot(projection='3d')]
+        
+        
+        if missing_sc is None:
+            included_sc = [0,1,2,3,4,5,6]
+        else:
+            included_sc = [i for i, sc in enumerate(sc_names) if sc not in missing_sc]
+
+        axs[0].scatter(sc_fin[included_sc,0],sc_fin[included_sc,1],sc_fin[included_sc,2], s=10)
+        from matplotlib.colors import LightSource
+        import matplotlib
+        from matplotlib import cm
+        from matplotlib import colors
+        
+        ls = LightSource(270,45)
+        from scipy.spatial import ConvexHull, Delaunay
+        C1, C2, C3, U, V, W = XYZ
+        C3 = np.ones_like(C2)*(bary[2])/2
+        
+
+
+        domask = True
+        if domask:
+            if missing_sc is None:
+                included_scn = sc_names
+            else:
+                included_scn = [sc for sc in sc_names if sc not in missing_sc]
+
+            included_pos_cols = sum([[f"{sc}_pos_x", f"{sc}_pos_y", f"{sc}_pos_z"] for sc in included_scn], [])
+
+            ax = plt.figure().add_subplot(projection='3d')
+            hull_pts = np.array(list(df[included_pos_cols].iloc[1].to_numpy().reshape((-1,3)))+(list(df[included_pos_cols].iloc[-1].to_numpy().reshape((-1,3)))))
+            print(hull_pts)
+            hull_dyn = ConvexHull(hull_pts)
+            print("hull done")
+            print(hull_dyn.vertices, hull_pts[hull_dyn.vertices])
+            dela_dyn = Delaunay(hull_pts[hull_dyn.vertices])
+            print("Delaunay done")
+            buf=L_m
+            mins_d = hull_pts.min(axis=0) - buf
+            maxs_d = hull_pts.max(axis=0) + buf
+            xs_d = np.linspace(mins_d[0], maxs_d[0], nx)
+            ys_d = np.linspace(mins_d[1], maxs_d[1], ny)
+            zs_d = np.linspace(mins_d[2], maxs_d[2], nz)
+
+            pts_d = np.column_stack([C1.ravel(), C2.ravel(), C3.ravel()])
+            # mask_d = (dela_dyn.find_simplex(pts_d) >= 0).reshape(U.shape)
+            
+
+            faces = hull_dyn.simplices
+            vertices = hull_pts
+            #Signed Distance Function
+            import trimesh
+            mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
+            closest_pts, unsigned_dist, _ = mesh.nearest.on_surface(pts_d)
+
+            inside = mesh.contains(pts_d)
+            signed_dist = unsigned_dist * np.where(inside, -1.0, 1.0)
+            sdf_grid = signed_dist.reshape(U.shape)
+
+            mask_d = sdf_grid < L_m
+
+        
+        
+        if curl:
+            
+            dx = np.mean(np.pad(np.diff(xs),(0,1),mode='edge'))
+            dy = np.mean(np.pad(np.diff(ys),(0,1),mode='edge'))
+            dz = np.mean(np.pad(np.diff(zs),(0,1),mode='edge'))
+            print(dx,dy,dz)
+            dFx_dx, dFx_dy, dFx_dz = np.gradient(U, dy,dx,dz)
+            dFy_dx, dFy_dy, dFy_dz = np.gradient(V, dy,dx,dz)
+            dFz_dx, dFz_dy, dFz_dz = np.gradient(W, dy,dx,dz)
+
+            U = dFz_dy - dFy_dz
+            V = dFx_dz - dFz_dx
+            W = dFy_dx - dFx_dy
+
+        for ax, title in zip(axs,["X-Y"]):#,"X-Z","Y-Z"])):
+            # print(C1.shape)
+            ax.set_xlim([xs[0]-L_m,xs[-1]+L_m])
+            ax.set_ylim([ys[0]-L_m-3,ys[-1]+L_m+3])
+            ax.set_zlim([zs[0]-L_m,zs[-1]+L_m])
+
+            ax.set_xlim([np.float64(295.078653887135), np.float64(423.661292622189)])
+            ax.set_ylim([np.float64(22.315227373359), np.float64(37.684772626641)])
+            ax.set_zlim([np.float64(-6.0), np.float64(7.56954525328202)])
+            # mag = np.hypot(U, V)
+
+
+
+            mag = np.sqrt(U**2+V**2+W**2)
+            
+            cmap = cm.coolwarm
+
+            norm = matplotlib.colors.Normalize(vmin=0,vmax=5)
+            rgb = cmap(norm(mag))
+
+            zind = len(zs)//2
+
+            # rgb = ls.shade(W, cmap=cm.coolwarm)
+            # if domask:
+            rgb[:,:,:,3] = 0.6
+            if domask:
+                rgb[:,:,:,3]*=mask_d[:,:,:]
+            cf  = ax.plot_surface(np.squeeze(C1[:,:,zind]), np.squeeze(C2[:,:,zind]), np.squeeze(C3[:,:,zind]), facecolors=np.squeeze(rgb[:,:,zind,:]), linestyle='', edgecolor=np.array([0,0,0,0]), rcount=nx, ccount=ny)
+            # ax.streamplot(C1, C2, U, V,
+            #               color=mag, cmap="magma", density=1.5, linewidth=0.5)
+            # ax.quiver(C1[::100], C2[::100],np.ones_like(C2[::100])*(maxs[2]-mins[2])/2, U[::100], V[::100], W[::100],
+                        #   normalize=True)
+
+            scat = ax.scatter(df["sc1_pos_x"],df["sc1_pos_y"],df["sc1_pos_z"],c=df["sc1_vg_B_z"],s=1,cmap=cmap, norm=norm)
+            if missing_sc is not None:
+                scs = [sc for sc in [2,3,4,5,6,7] if f"sc{sc}" not in missing_sc]
+            else:
+                scs = [2,3,4,5,6,7]
+            for sc in scs:
+                ax.scatter(df[f"sc{sc}_pos_x"],df[f"sc{sc}_pos_y"],df[f"sc{sc}_pos_z"],c=df[f"sc{sc}_vg_B_z"],s=1,cmap=cmap, norm=norm)
+            if title == "X-Y":
+                # sc_u = cluster[:,0]; sc_v = cluster[:,1]
+                out_comp = "Z"
+            elif title == "X-Z":
+                pass
+                # sc_u = cluster[:,0]; sc_v = cluster[:,2]
+            else:  
+                # sc_u = cluster[:,1]; sc_v = cluster[:,2]
+                out_comp = "X"
+
+            # ax.scatter(sc_u, sc_v, c="k", s=20, label="SC")
+            ax.legend(loc="upper right", fontsize="small")
+            ax.margins(0)
+            # ax.set_aspect("equal")
+            ax.set_title(f"{title}")
+            ax.set_xlabel(f"{title[0]} (d_i)")
+            ax.set_ylabel(f"{title[-1]} (d_i)")
+
+            fig.colorbar(scat, ax=ax, orientation="horizontal",
+                label=fr"$|J|$")
+                        # label=fr"$B_{{{out_comp}}}$")
+        fig.suptitle(f"RBF reconstruction")
 
         if output_dir == None:
-            output_dir = "~/"
+            output_dir = "./RBF_outputs_J/"
 
         if output_file == None:
-            output_file = f"Wasserstein_vs_Time+error_abs_bulk={np.sqrt(vg_v_x**2+vg_v_y**2+vg_v_z**2)}.png"
+            if missing_sc is not None:
+                miss ="no_"+"".join(missing_sc)        
+            else:
+                miss = ""
+            output_file = f"RBF_{conf}_full_reconstruction_{time:05d}s{miss}.png"
         
         output_file = output_dir+output_file
+                
+        plt.savefig(output_file,dpi=300)
+        plt.close()
         
-        plt.savefig(output_file)
-
-    return 
+        return
 
 
-#RUN
-#for i in range(T):
-#    plot_rbf_slices(t_idx= i)
-#Wasserstein_Hull(time = 1340, save = False)
-#plot_Wass_time(output_dir=output_dir,output_file=f"Wasserstein_vs_Time.png")
+    def plot_vlas_RBF_error(time, save = True, rel_error = True, L_Re = 1.2, output_dir = None, output_file = None, nx = 200, ny = 200, err_vmax = 1.5e-8):
+        """
+        Creates a 3x3 plot of countours  (First row Vlasiator xy, xz and yz planes with streamlines,
+        Second row RBF xy, xz, yz planes with streamliens, Third row point-wise error comparison of 
+        the magnetic field strenght of the first two rows)  
+        
+        time : Time of reconstruction 
+        save : Save figure
+        L_Re : Set size of slice
+        nx, ny : Grid resolution
+        rel_error : Toggle between relative error and absolute error
+        err_vmax : Set max error for the absolute error (should also be implemented for relative error)
+        output_dir : Output file directory for saving figure
+        output_file : Output file name 
+        
+        TODO: Recenter RBF points to original points. Could be just set vlasiator grid for RBF grid
+        """
+        #Vlasitor DATA
+        file = f"/wrk-vakka/group/spacephysics/vlasiator/3D/FHA/bulk1/bulk1.000{time}.vlsv"
+        print(file)
+        vlsvfile = pt.vlsvfile.VlsvReader(file)
+        XY_vlas = sample_slice_vlas(vlsvfile = vlsvfile, plane = "xy", nx=nx, ny=ny, L_Re=L_Re)
+        XZ_vlas = sample_slice_vlas(vlsvfile = vlsvfile, plane = "xz", nx=nx, ny=ny, L_Re=L_Re)
+        YZ_vlas = sample_slice_vlas(vlsvfile = vlsvfile, plane = "yz", nx=nx, ny=ny, L_Re=L_Re)
 
-#for i in df["Timeframe"]:
-#   plot_vlas_slices(time = i, output_dir=output_dir)
-plot_vlas_RBF_error(time = 1360, output_dir=output_dir, output_file=f"full_vlas_rbf_comp_time=1360_L=1.2_error_max_err=120.png")
-#plot_Wass_time(output_dir=output_dir, output_file="Wasserstein_vs_Time+error_bulk_thight.png", save = False)
+        init_pts = np.vstack(list(sc_init.values()))
+        vlas_planes = [XY_vlas, XZ_vlas, YZ_vlas]
+        
+        #RBF DATA
+        row = df[df["Timeframe"] == time].iloc[0]
+        cluster = row[pos_cols].to_numpy().reshape(-1,3)
+        bary    = cluster.mean(axis=0)
+
+        L_m = L_Re * R_e
+        xs = np.linspace(bary[0]-L_m, bary[0]+L_m, nx)
+        ys = np.linspace(bary[1]-L_m, bary[1]+L_m, ny)
+        zs = np.linspace(bary[2]-L_m, bary[2]+L_m, ny)
+
+        XY_rbf = sample_slice(xs, ys, bary[2], "xy", nx, ny)
+        XZ_rbf = sample_slice(xs, zs, bary[1], "xz", nx, ny)
+        YZ_rbf = sample_slice(ys, zs, bary[0], "yz", nx, ny)
+        
+        rbf_planes = [XY_rbf,XZ_rbf,YZ_rbf]
+
+
+        fig, axes = plt.subplots(3,3,figsize = (13,11), constrained_layout=True)
+        fig.dpi = 500
+        panels = [
+        ("X-Y",("X","Y","z")),
+        ("X-Z",("X","Z","y")),
+        ("Y-Z",("Y","Z","x")),
+        ]
+        if rel_error:
+            err_vmin, err_vmax = 0.0, 50.0                     
+            levels   = np.linspace(err_vmin, err_vmax, 31)     
+            norm     = mpl.colors.Normalize(vmin=err_vmin, vmax=err_vmax)
+            error_lbl = "Error (%)"
+            error_title = "point-wise error (%)"
+        else:
+
+            err_vmin, err_vmax = 0.0, err_vmax
+            levels   = np.linspace(err_vmin, err_vmax, 31)
+            norm     = mpl.colors.Normalize(vmin=err_vmin, vmax=err_vmax)
+            error_lbl = "|ΔB|"  
+            error_title = "Absolute point-wise error"          
+
+        clus_size = 20
+
+        for i, (vlas_plane,rbf_plane, panel) in enumerate(zip(vlas_planes,rbf_planes,panels)):
+
+            #Component naming here wrong but makes no difference with absolute error
+            Pr, Qr, Bxr, Byr, Bzr = rbf_plane
+            Pv, Qv, Bxv, Byv, Bzv = vlas_plane     
+            
+            dBx = Bxr - Bxv
+            dBy = Byr - Byv
+            dBz = Bzr - Bzv
+
+            dB_mag = np.sqrt(dBx**2 + dBy**2 + dBz**2)   
+            Bv_mag = np.sqrt(Bxv**2+Byv**2+Bzv**2)
+            if rel_error:
+                error = 100*dB_mag/Bv_mag
+            else: 
+                error = dB_mag
+            title, (lab1, lab2, lab3) = panel
+            Pr, Qr = rbf_plane[0], rbf_plane[1]
+        
+            #
+            #Vlasiator Plotting
+            #
+            cont_0 = axes[0,i].contourf(Pv,Qv,vlas_plane[-1], 30, cmap="coolwarm")
+            speed = np.hypot(vlas_plane[2], vlas_plane[3])
+            axes[0,i].streamplot(Pv, Qv, vlas_plane[2], vlas_plane[3],
+                        color=speed, cmap="magma", density=2, linewidth = 0.4)
+            
+            if lab1 == "X":             
+                u_v = init_pts[:,0]
+                u_r = cluster[:,0] 
+            elif lab1 == "Y":           
+                u_v = init_pts[:,1]
+                u_r = cluster[:,1]
+            else:
+                u_v = init_pts[:,2]
+                u_r = cluster[:,2]
+            if lab2 == "Y":             
+                v_v = init_pts[:,1]
+                v_r = cluster[:,1]
+            elif lab2 == "Z":           
+                v_v = init_pts[:,2]
+                v_r = cluster[:,2]
+            else:
+                v_v = init_pts[:,0]
+                v_r = cluster[:,0]
+            
+            cbar = fig.colorbar(cont_0, ax=axes[0,i], orientation="vertical", shrink = 0.8)
+            cbar.set_label(f"$B_{lab3}$")
+            axes[0,i].scatter(u_v, v_v, c="k", s=clus_size, label="spacecraft")
+            axes[0,i].margins(0)
+            #axes[0,i].set_xlabel(f"{lab1}  (m)")
+            axes[0,i].set_ylabel(f"{lab2} (m)")
+            axes[0,i].set_aspect("equal")
+            axes[0,0].legend(loc="upper right",fontsize="small")
+            axes[0,i].set_title(title)
+            #axes[0,i].legend(loc= "upper right",fontsize="small")
+            #
+            #RBF plotting
+            #
+            cont_1 = axes[1,i].contourf(Pr,Qr,rbf_plane[-1], 30, cmap="coolwarm")
+            speed = np.hypot(rbf_plane[2], rbf_plane[3])
+            axes[1,i].streamplot(Pr, Qr, rbf_plane[2], rbf_plane[3],
+                        color=speed, cmap="magma", density=2, linewidth = 0.4)
+            
+            cbar = fig.colorbar(cont_1, ax=axes[1,i], orientation="vertical", shrink = 0.8)
+            cbar.set_label(f"$B_{lab3}$")
+            axes[1,i].scatter(u_r, v_r, c="k", s=clus_size, label="spacecraft")
+            axes[1,i].margins(0)
+            #axes[1,i].set_xlabel(f"{lab1}  (10³ km)")
+            axes[1,i].set_ylabel(f"{lab2} (m)")
+            axes[1,i].set_aspect("equal")
+            axes[1,0].legend(loc="upper right",fontsize="small")
+            #axes[1,i].set_title(title)
+            #
+            #POINT-WISE ERROR
+            #
+            cf = axes[2,i].contourf(Pv, Qv, error, levels = levels, cmap="viridis", norm = norm, extend = "max")
+        
+            axes[2,i].margins(0) 
+            axes[2,i].scatter(u_v, v_v, c="k", s=clus_size, label="spacecraft")
+            axes[2,i].set_xlabel(f"{lab1} (m)")
+            axes[2,i].set_ylabel(f"{lab2} (m)")
+            axes[2,i].set_aspect("equal")
+            #axes[2,i].set_title(title)
+            axes[2,0].legend(loc="upper right",fontsize="small")
+        
+        sm = mpl.cm.ScalarMappable(cmap="viridis",
+                                norm=norm)
+
+        fig.colorbar(sm, ax=axes[2,:].ravel().tolist(),
+                    orientation="vertical", label=error_lbl, shrink = 0.8)
+        #Label each row
+        row_y = [0.96, 0.64, 0.32]  
+
+        for y, txt in zip(row_y,
+                        ["Vlasiator",
+                        "RBF",
+                        error_title]):
+            fig.text(0.5, y, txt, ha="center", va="center", fontsize=20)
+
+        #fig.tight_layout()
+        fig.suptitle(f"Comparison of Vlasiator and RBF reconstruction at time = {time}s", fontsize = 20)
+        if save:
+            if output_dir == None:
+                output_dir = "~/"
+
+            if output_file == None:
+                if rel_error:
+                    output_file = f"full_vlas_rbf_comp_time={time}_L={L_Re}_GOOD_scale.png"
+                else: 
+                    output_file = f"full_vlas_rbf_comp_time={time}_L={L_Re}_abs_error.png"
+            
+            output_file = output_dir+output_file           
+            plt.savefig(output_file)    
+        return
+
+    def Wasserstein_Hull(time, type = "filled", save = True, buffer = 0, error_cutoff = 20, info = True, output_dir =None, output_file =None):
+        """
+        Changes to be made: with time determine RBF sc locations, but
+        have vlasiator stay in place and just change file time
+        """
+        from scipy.spatial import ConvexHull, Delaunay
+        file = f"/wrk-vakka/group/spacephysics/vlasiator/3D/FHA/bulk1/bulk1.000{time}.vlsv"
+        if info:
+            print(file)
+        vlsvfile = pt.vlsvfile.VlsvReader(file)
+        
+        #Vlasitor convex hull from initial spacecraft locations
+        init_pts = np.vstack(list(sc_init.values()))
+        hull_init = ConvexHull(init_pts)
+        dela_init = Delaunay(init_pts[hull_init.vertices])
+
+        buf = buffer * R_e
+        mins_i = init_pts.min(axis=0) - buf
+        maxs_i = init_pts.max(axis=0) + buf
+        nx = ny = nz = 60
+        xs_i = np.linspace(mins_i[0], maxs_i[0], nx)
+        ys_i = np.linspace(mins_i[1], maxs_i[1], ny)
+        zs_i = np.linspace(mins_i[2], maxs_i[2], nz)
+        X_i, Y_i, Z_i = np.meshgrid(xs_i, ys_i, zs_i, indexing="ij")
+
+        pts_i = np.column_stack([X_i.ravel(), Y_i.ravel(), Z_i.ravel()])
+        mask_i = dela_init.find_simplex(pts_i) >= 0
+        B_vlas = vlsvfile.read_interpolated_variable("vg_b_vol", pts_i[mask_i])
+
+        #RBF convex hull points from "moved" location
+        row = df[df["Timeframe"] == time].iloc[0]
+        dyn_pts = row[pos_cols].to_numpy().reshape(-1, 3)
+        hull_dyn = ConvexHull(dyn_pts)
+        dela_dyn = Delaunay(dyn_pts[hull_dyn.vertices])
+
+        mins_d = dyn_pts.min(axis=0) - buf
+        maxs_d = dyn_pts.max(axis=0) + buf
+        xs_d = np.linspace(mins_d[0], maxs_d[0], nx)
+        ys_d = np.linspace(mins_d[1], maxs_d[1], ny)
+        zs_d = np.linspace(mins_d[2], maxs_d[2], nz)
+        X_d, Y_d, Z_d = np.meshgrid(xs_d, ys_d, zs_d, indexing="ij")
+
+        pts_d = np.column_stack([X_d.ravel(), Y_d.ravel(), Z_d.ravel()])
+        mask_d = dela_dyn.find_simplex(pts_d) >= 0
+        B_rbf = rbf(pts_d[mask_d])
+
+        #Collect W_rels into array for plotting
+        W_rels = []
+        for comp in range(3):
+            comp_vlas = B_vlas[:, comp]
+            comp_rbf = B_rbf[:, comp]
+            W1 = wasserstein_distance(comp_rbf, comp_vlas)
+            med = np.median(comp_vlas)
+            Wden = wasserstein_distance(comp_vlas, np.full_like(comp_vlas, med))
+            W_rels.append(float(round(W1/Wden, 4)))
+
+        if info:
+            dB = np.linalg.norm(B_rbf-B_vlas,axis=1)
+            B_vlas_mag = np.linalg.norm(B_vlas,axis=1)
+            valid = np.isfinite(dB) & np.isfinite(B_vlas_mag) & (B_vlas_mag > 0)
+
+            error_per = np.full_like(dB, np.nan)
+            error_per[valid] = 100 * dB[valid] / B_vlas_mag[valid]
+
+            fraction = np.count_nonzero(error_per[valid] < error_cutoff) / np.count_nonzero(valid)
+            print(f"Fraction of points with <{error_cutoff}%: {fraction:.3f}")
+            
+        if save:
+            labels = [r"$B_x$", r"$B_y$", r"$B_z$"]
+            fig, axes = plt.subplots(1, 3, figsize=(12,4))
+            for ax, lbl, vlas_comp, rbf_comp, W in zip(axes, labels, 
+                                            B_vlas.T, B_rbf.T, W_rels):
+                lo, hi = np.percentile(np.concatenate((vlas_comp, rbf_comp)), [0.5, 99.5])
+                bins = np.linspace(lo, hi, 41)
+                if type == "filled":
+                    ax.hist(vlas_comp, bins=bins, alpha=0.5, label="Vlasiator")
+                    ax.hist(rbf_comp, bins=bins, alpha=0.5, label="RBF")
+                else:
+                    ax.hist(vlas_comp, bins=bins, histtype="step", label="Vlasiator")
+                    ax.hist(rbf_comp, bins=bins, histtype="step", label="RBF")
+                ax.axvline(np.median(vlas_comp), ls="--", color="k")
+                ax.set_title(f"$W_{{rel}}$={W}")
+                ax.set_xlabel(f"{lbl}")
+                ax.legend()
+                ax.grid(alpha=0.3)
+
+            fig.suptitle(f"Component distributions  t={time}s")
+
+
+            if output_dir == None:
+                output_dir = "~/"
+
+            if output_file == None:
+                output_file = f"Wassertein_hull_{type}_{time}s.png"
+            output_file = output_dir+output_file
+            
+            
+            plt.savefig(output_file)
+            plt.close(fig)
+
+        return W_rels, round(fraction,3)
+
+    def plot_Wass_time(save =True, error_cutoff = 20, output_dir = None, output_file = None):
+
+        """
+        Convex hull at time index and calculate Wasserstein distance from that. 
+        Calculate Wasserstein distance from hull also in Vlasiator timestep 
+        Plot W_rel/time
+        for time in times:
+            read Vlasitor
+            get points in hull for vlasitor and RBF
+            Calculate W_rels
+        Plot
+        """
+        times = df["Timeframe"]
+        W_x,W_y,W_z,error = [], [], [], []
+        for t in times:
+            data, error_frac  = Wasserstein_Hull(t, save = False,error_cutoff=error_cutoff)
+            W_x.append(data[0])
+            W_y.append(data[1])
+            W_z.append(data[2])
+            error.append(error_frac)
+        print(f"W_rel 50th percentiles: W_x = {np.percentile(W_x,50)} W_y = {np.percentile(W_y,50)}, W_z = {np.percentile(W_z,50)}")
+        if save:
+            fig, ax = plt.subplots(1, 2, figsize=(12,5))
+        
+            ax[0].plot(times, W_x, label=r'$W_x$')
+            ax[0].plot(times, W_y, label=r'$W_y$')
+            ax[0].plot(times, W_z, label=r'$W_z$')
+
+            ax[0].set_xlabel("Time (s)")
+            ax[0].set_ylabel(r"Relative Wasserstein Distance $W_{\mathrm{rel}}$")
+            ax[0].set_title("Wasserstein Distance vs Time")
+            ax[0].grid(True, alpha=0.3)
+            ax[0].legend()
+            
+            ax[1].plot(times, error)
+            
+            ax[1].set_xlabel("Time (s)")
+            ax[1].set_ylabel(r"Point-wise error")
+            ax[1].set_title(f"Fraction of points with error <{error_cutoff}%")
+            ax[1].grid(True, alpha=0.3)
+            fig.suptitle(f"Bulk velocity: ({np.round(vg_v_x,1)},{np.round(vg_v_y,1)},{np.round(vg_v_z,1)}) m/s")
+            fig.tight_layout()
+
+            if output_dir == None:
+                output_dir = "~/"
+
+            if output_file == None:
+                output_file = f"Wasserstein_vs_Time+error_abs_bulk={np.sqrt(vg_v_x**2+vg_v_y**2+vg_v_z**2)}.png"
+            
+            output_file = output_dir+output_file
+            
+            plt.savefig(output_file)
+
+        return 
+
+    plot_rbf_full_slice(endi, L_Re = 0.1/R_e, nx=200, ny=20000)
+
+    #RUN
+    # for i in range(0, T, 10):
+    #    plot_rbf_slices(i, L_Re = 3/R_e)
+    #Wasserstein_Hull(time = 1340, save = False)
+    #plot_Wass_time(output_dir=output_dir,output_file=f"Wasserstein_vs_Time.png")
+
+    #for i in df["Timeframe"]:
+    #   plot_vlas_slices(time = i, output_dir=output_dir)
+    # plot_vlas_RBF_error(time = 1360, output_dir=output_dir, output_file=f"full_vlas_rbf_comp_time=1360_L=1.2_error_max_err=120.png")
+    #plot_Wass_time(output_dir=output_dir, output_file="Wasserstein_vs_Time+error_bulk_thight.png", save = False)
