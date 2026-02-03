@@ -18,6 +18,9 @@ import matplotlib as mpl
 import analysator as pt
 import scipy, sys
 
+
+mu0 = 1.256637e-6
+
 """
 #SC1-4 overall means (from 1353 onwards):
 vg_v_x = -884632.1570458194
@@ -39,23 +42,23 @@ vg_v_z =  147101.5
 # output_dir ="/home/leeviloi/fluxrope_thesis/timeseries_tail/"
 
 vel_bulk = -1*np.array([vg_v_x,vg_v_y,vg_v_z])
-end=20874
-stride=50
-start=15000
+end=18500
+stride=25
+start=16500
 
 # missing_sc = ["sc2","sc3","sc4"]
 # missing_sc = ["sc5","sc6","sc7"]
 # missing_sc = ["sc2","sc3","sc4","sc5","sc6","sc7"]
 #missing_sc = None
 # misses = [None]
-misses = [None, ["sc2","sc3","sc4"], ["sc5","sc6","sc7"], ["sc2","sc3","sc4","sc5","sc6","sc7"]]
+misses = [None, ["sc2","sc3","sc4"], ["sc5","sc6","sc7"]]
 # misses = [["sc2","sc3","sc4","sc5","sc6","sc7"]]
 for missing_sc in misses:
  for endi,end in enumerate([end]):#enumerate(range(start+stride,end,stride)):
     #Shared info
     # df = pd.read_csv("/home/leeviloi/plas_obs_vg_b_timeseries_tail_right_z=0.5.csv")
 
-    conf = "NSP1"
+    conf = "NSP2"
     df = pd.read_csv(f"./shock-run/{conf}_merged.csv")
 
     print(df.iloc[0])
@@ -503,20 +506,23 @@ for missing_sc in misses:
         bary    = dyn_pts.mean(axis=0)
         mins = dyn_pts.min(axis=0)
         maxs = dyn_pts.max(axis=0)
-        yf = 1
+        yf = 2
         L_m = L_Re * R_e
         xs = np.linspace(mins[0]-L_m, maxs[0]+L_m, nx)
         ys = np.linspace(mins[1]-L_m*yf, maxs[1]+L_m*yf, ny)
         zs = np.linspace(bary[2]-L_m, bary[2]+L_m, nz)
 
-        # print(xs,ys,zs)
+        # print(xs.shape,ys.shape,zs.shape)
+        # import sys
+        # sys.exit()
 
         #Sample the coordinates 
-        curl=True            
+        curl=False            
         if curl:
             XYZ = sample_block(xs, ys, zs, nx, ny, nx)
         else:
             XY = sample_slice(xs, ys, bary[2], "xy", nx, ny)
+            
         # XZ = sample_slice(xs, zs, bary[1], "xz", nx, ny)
         # YZ = sample_slice(ys, zs, bary[0], "yz", nx, ny)
         
@@ -540,8 +546,11 @@ for missing_sc in misses:
         
         ls = LightSource(270,45)
         from scipy.spatial import ConvexHull, Delaunay
-        C1, C2, C3, U, V, W = XYZ
-        C3 = np.ones_like(C2)*(bary[2])/2
+        if curl:
+            C1, C2, C3, U, V, W = XYZ
+        else:
+            C1, C2, U, V, W = XY
+            C3 = np.ones_like(C2)*(bary[2])/2
         
 
 
@@ -598,9 +607,9 @@ for missing_sc in misses:
             dFy_dx, dFy_dy, dFy_dz = np.gradient(V, dy,dx,dz)
             dFz_dx, dFz_dy, dFz_dz = np.gradient(W, dy,dx,dz)
 
-            U = dFz_dy - dFy_dz
-            V = dFx_dz - dFz_dx
-            W = dFy_dx - dFx_dy
+            U = (dFz_dy - dFy_dz)/mu0
+            V = (dFx_dz - dFz_dx)/mu0
+            W = (dFy_dx - dFx_dy)/mu0
 
         for ax, title in zip(axs,["X-Y"]):#,"X-Z","Y-Z"])):
             # print(C1.shape)
@@ -626,10 +635,16 @@ for missing_sc in misses:
 
             # rgb = ls.shade(W, cmap=cm.coolwarm)
             # if domask:
-            rgb[:,:,:,3] = 0.6
-            if domask:
-                rgb[:,:,:,3]*=mask_d[:,:,:]
-            cf  = ax.plot_surface(np.squeeze(C1[:,:,zind]), np.squeeze(C2[:,:,zind]), np.squeeze(C3[:,:,zind]), facecolors=np.squeeze(rgb[:,:,zind,:]), linestyle='', edgecolor=np.array([0,0,0,0]), rcount=nx, ccount=ny)
+            if curl:
+                rgb[:,:,:,3] = 0.6
+                if domask:
+                    rgb[:,:,:,3]*=mask_d[:,:,:]
+                cf  = ax.plot_surface(np.squeeze(C1[:,:,zind]), np.squeeze(C2[:,:,zind]), np.squeeze(C3[:,:,zind]), facecolors=np.squeeze(rgb[:,:,zind,:]), linestyle='', edgecolor=np.array([0,0,0,0]), rcount=nx, ccount=ny)
+            else:
+                rgb[:,:,3] = 0.6
+                if domask:
+                    rgb[:,:,3]*=mask_d[:,:]
+                cf  = ax.plot_surface(np.squeeze(C1[:,:]), np.squeeze(C2[:,:]), np.squeeze(C3[:,:]), facecolors=np.squeeze(rgb[:,:,:]), linestyle='', edgecolor=np.array([0,0,0,0]), rcount=nx, ccount=ny)
             # ax.streamplot(C1, C2, U, V,
             #               color=mag, cmap="magma", density=1.5, linewidth=0.5)
             # ax.quiver(C1[::100], C2[::100],np.ones_like(C2[::100])*(maxs[2]-mins[2])/2, U[::100], V[::100], W[::100],
@@ -666,8 +681,9 @@ for missing_sc in misses:
         fig.suptitle(f"RBF reconstruction")
 
         if output_dir == None:
-            output_dir = "./RBF_outputs_J/"
+            output_dir = "./RBF_outputs_handlight/"
 
+        
         if output_file == None:
             if missing_sc is not None:
                 miss ="no_"+"".join(missing_sc)        
@@ -675,8 +691,9 @@ for missing_sc in misses:
                 miss = ""
             output_file = f"RBF_{conf}_full_reconstruction_{time:05d}s{miss}.png"
         
+        np.savez(output_dir+output_file+"_data", C1=np.squeeze(C1), C2=np.squeeze(C2), C3=np.squeeze(C3), U=U,V=V,W=W, mask =mask_d)
+        
         output_file = output_dir+output_file
-                
         plt.savefig(output_file,dpi=300)
         plt.close()
         
@@ -1024,7 +1041,7 @@ for missing_sc in misses:
 
         return 
 
-    plot_rbf_full_slice(endi, L_Re = 0.1/R_e, nx=200, ny=20000)
+    plot_rbf_full_slice(endi, L_Re = 0.25/R_e, nx=2000, ny=200)
 
     #RUN
     # for i in range(0, T, 10):
